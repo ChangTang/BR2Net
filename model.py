@@ -15,6 +15,13 @@ class BR2Net(nn.Module):
         self.layer3 = resnext.layer3
         self.layer4 = resnext.layer4
 
+        ## channel weighted feature maps
+        self.CAlayer0 = nn.Sequential(CALayer(64,16))
+        self.CAlayer1 = nn.Sequential(CALayer(256,16))
+        self.CAlayer2 = nn.Sequential(CALayer(512,16))
+        self.CAlayer3 = nn.Sequential(CALayer(1024,16))
+        self.CAlayer4 = nn.Sequential(CALayer(2048,16))
+
         ## Low to High
         self.predictL2H0 = nn.Conv2d(64, 1, kernel_size=1)
         self.predictL2H1 = nn.Sequential(
@@ -76,18 +83,24 @@ class BR2Net(nn.Module):
 	l0_size = layer0.size()[2:]
 	l4_size = layer4.size()[2:]
 
+        ## Compute CA weighted features
+        CAlayer0 = self.CAlayer0(layer0)
+        CAlayer1 = self.CAlayer1(layer1)
+        CAlayer2 = self.CAlayer2(layer2)
+        CAlayer3 = self.CAlayer3(layer3)
+        CAlayer4 = self.CAlayer4(layer4)
 
-	predictL2H0 = self.predictL2H0(layer0)
-        predictL2H1 = self.predictL2H1(torch.cat((predictL2H0, F.upsample(layer1, size=l0_size, mode='bilinear')), 1)) + predictL2H0
-        predictL2H2 = self.predictL2H2(torch.cat((predictL2H1, F.upsample(layer2, size=l0_size, mode='bilinear')), 1)) + predictL2H1
-	predictL2H3 = self.predictL2H3(torch.cat((predictL2H2, F.upsample(layer3, size=l0_size, mode='bilinear')), 1)) + predictL2H2
-	predictL2H4 = self.predictL2H4(torch.cat((predictL2H3, F.upsample(layer4, size=l0_size, mode='bilinear')), 1)) + predictL2H3
+	predictL2H0 = self.predictL2H0(CAlayer0)
+        predictL2H1 = self.predictL2H1(torch.cat((predictL2H0, F.upsample(CAlayer1, size=l0_size, mode='bilinear')), 1)) + predictL2H0
+        predictL2H2 = self.predictL2H2(torch.cat((predictL2H1, F.upsample(CAlayer2, size=l0_size, mode='bilinear')), 1)) + predictL2H1
+	predictL2H3 = self.predictL2H3(torch.cat((predictL2H2, F.upsample(CAlayer3, size=l0_size, mode='bilinear')), 1)) + predictL2H2
+	predictL2H4 = self.predictL2H4(torch.cat((predictL2H3, F.upsample(CAlayer4, size=l0_size, mode='bilinear')), 1)) + predictL2H3
 
-	predictH2L0 = self.predictH2L0(layer4)
-        predictH2L1 = self.predictH2L1(torch.cat((predictH2L0, F.upsample(layer3, size=l4_size, mode='bilinear')), 1)) + predictH2L0
-        predictH2L2 = self.predictH2L2(torch.cat((predictH2L1, F.upsample(layer2, size=l4_size, mode='bilinear')), 1)) + predictH2L1
-	predictH2L3 = self.predictH2L3(torch.cat((predictH2L2, F.upsample(layer1, size=l4_size, mode='bilinear')), 1)) + predictH2L2
-	predictH2L4 = self.predictH2L4(torch.cat((predictH2L3, F.upsample(layer0, size=l4_size, mode='bilinear')), 1)) + predictH2L3
+	predictH2L0 = self.predictH2L0(CAlayer4)
+        predictH2L1 = self.predictH2L1(torch.cat((predictH2L0, F.upsample(CAlayer3, size=l4_size, mode='bilinear')), 1)) + predictH2L0
+        predictH2L2 = self.predictH2L2(torch.cat((predictH2L1, F.upsample(CAlayer2, size=l4_size, mode='bilinear')), 1)) + predictH2L1
+	predictH2L3 = self.predictH2L3(torch.cat((predictH2L2, F.upsample(CAlayer1, size=l4_size, mode='bilinear')), 1)) + predictH2L2
+	predictH2L4 = self.predictH2L4(torch.cat((predictH2L3, F.upsample(CAlayer0, size=l4_size, mode='bilinear')), 1)) + predictH2L3
 
         
 
@@ -107,6 +120,26 @@ class BR2Net(nn.Module):
 		
         if self.training:
             return predictL2H0, predictL2H1, predictL2H2, predictL2H3, predictL2H4, predictH2L0, predictH2L1, predictH2L2, predictH2L3, predictH2L4, predictFusion
-        return F.sigmoid(predictL2H4)
+        return F.sigmoid(predictFusion)
+
+
+## Channel Attention (CA) Layer
+class CALayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(CALayer, self).__init__()
+        # global average pooling: feature --> point
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # feature channel downscale and upscale --> channel weight
+        self.conv_du = nn.Sequential(
+                nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=True),
+                nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.conv_du(y)
+        return x * y
 
 
